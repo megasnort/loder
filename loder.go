@@ -13,6 +13,8 @@ import (
 func main() {
 	base_url, offset, limit, err := parseArguments()
 
+	c := make(chan int)
+
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -22,55 +24,63 @@ func main() {
 
 	for counter := offset; counter < (offset+limit) || limit == -1; counter++ {
 		url = fmt.Sprintf(base_url, counter)
+		go downloadFromUrl(url, c)
+	}
 
-		fmt.Println("Downloading", url)
-		_, err := downloadFromUrl(url)
-
-		if err != nil {
-			fmt.Println(err)
-			break
-		}
+	for i := 0; i < limit; i++ {
+		<-c
 	}
 }
 
-func downloadFromUrl(url string) (fileName string, err error) {
-
+func downloadFromUrl(url string, c chan int) {
 	tokens := strings.Split(url, "/")
-	fileName = tokens[len(tokens)-1]
+	fileName := tokens[len(tokens)-1]
 
 	if _, err := os.Stat(fileName); err == nil {
-		return fileName, nil
+		fmt.Println(fileName, "exists")
+		c <- 0
+		return
+	} else {
+		response, err := http.Get(url)
+		defer response.Body.Close()
+
+		// network problem
+		if err != nil {
+			fmt.Println(fileName, "network problem")
+			c <- 0
+			return
+		}
+
+		// file not found
+		if response.StatusCode != 200 {
+			fmt.Println(fileName, "not found")
+			c <- 0
+			return
+		}
+
+		output, err := os.Create(fileName)
+		defer output.Close()
+
+		// problem creating on file system
+		if err != nil {
+			fmt.Println(fileName, "creating problem")
+			c <- 0
+			return
+		}
+
+		_, err = io.Copy(output, response.Body)
+
+		// problem copying the file
+		if err != nil {
+			fmt.Println(fileName, "copying problem")
+			c <- 0
+			return
+		}
+
+		fmt.Println("Downloaded", fileName)
 	}
 
-	response, err := http.Get(url)
-	defer response.Body.Close()
-
-	// network problem
-	if err != nil {
-		return "", err
-	}
-
-	// file not found
-	if response.StatusCode != 200 {
-		return "", errors.New("Not found")
-	}
-
-	output, err := os.Create(fileName)
-	defer output.Close()
-
-	// problem creating on file system
-	if err != nil {
-		return "", err
-	}
-
-	_, err = io.Copy(output, response.Body)
-
-	// problem copying the file
-	if err != nil {
-		return "", err
-	}
-
-	return fileName, nil
+	c <- 1
 }
 
 func parseArguments() (base_url string, offset int, limit int, err error) {
@@ -103,6 +113,11 @@ func parseArguments() (base_url string, offset int, limit int, err error) {
 			}
 
 			limit = i
+		} else {
+			// this is a tempfix
+			// eventually we want a fixed amount of go routines, fetching all
+			// images, until the increasing of numbers hits an 404 image
+			limit = 10
 		}
 	}
 
